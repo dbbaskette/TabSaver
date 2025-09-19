@@ -54,7 +54,7 @@ export default defineBackground(() => {
     if (request.action === 'saveTabsToBookmarks') {
       (async () => {
         try {
-          const { tabs, customFolderName } = request.payload;
+          const { tabs, customFolderName } = request;
 
           if (!tabs || tabs.length === 0) {
             sendResponse({ success: false, error: 'No tabs provided' });

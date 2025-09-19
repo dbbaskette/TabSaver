@@ -1,15 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "nTabs",
-  "version": "1.1",
-  "description": "Manage and sync your open Chrome tabs to Notion collections.",
+  "name": "TabSaver",
+  "version": "2.0",
+  "description": "Manage and save your open Chrome tabs to organized bookmark folders.",
   "author": "dbbaskette",
   "permissions": [
     "tabs",
-    "storage"
-  ],
-  "host_permissions": [
-    "https://api.notion.com/"
+    "storage",
+    "bookmarks"
   ],
   "action": {
     "default_icon": {

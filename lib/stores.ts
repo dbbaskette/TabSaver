@@ -7,6 +7,9 @@ export const tabsStore = writable<Tab[]>([]);
 // Custom folder name store
 export const customFolderNameStore = writable<string>('');
 
+// Refresh trigger for components
+export const refreshTrigger = writable<number>(0);
+
 // Status store
 function createStatusStore() {
   const { subscribe, set, update } = writable<Status>({

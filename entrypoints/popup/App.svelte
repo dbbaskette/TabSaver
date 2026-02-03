@@ -1,39 +1,43 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { tabsStore, customFolderNameStore, statusStore, selectedTabs, tabsActions } from '../../lib/stores';
-  import type { Tab, SaveTabsResponse } from '../../lib/types';
-  import { getRecentTabSaverFolders, openBookmarkFolder } from '../../lib/bookmark-utils';
+  import { onMount } from "svelte";
+  import {
+    tabsStore,
+    customFolderNameStore,
+    statusStore,
+    selectedTabs,
+    tabsActions,
+    refreshTrigger,
+  } from "../../lib/stores";
+  import type { Tab, SaveTabsResponse } from "../../lib/types";
+  import { deduplicateBookmarks } from "../../lib/bookmark-utils";
+  import ArchiveView from "./components/ArchiveView.svelte";
 
   let isLoading = true;
   let isSaving = false;
   let isClosing = false;
-  let currentView = 'tabs'; // 'tabs', 'folders', 'bookmarks'
-  let recentFolders = [];
-  let selectedFolder = null;
-  let folderBookmarks = [];
-  let selectedBookmarks = [];
+  let isDeduping = false;
+  let dedupeProgress = 0;
+  let dedupeStatus = "";
+  let currentView = "tabs"; // 'tabs', 'archive'
 
   onMount(async () => {
     try {
       // Get all tabs in current window
       const tabs = await chrome.tabs.query({ currentWindow: true });
 
-      const formattedTabs: Tab[] = tabs.map(tab => ({
+      const formattedTabs: Tab[] = tabs.map((tab) => ({
         id: tab.id!,
-        title: tab.title || 'Untitled',
-        url: tab.url || '',
+        title: tab.title || "Untitled",
+        url: tab.url || "",
         favIconUrl: tab.favIconUrl,
-        selected: false
+        selected: false,
       }));
 
       tabsStore.set(formattedTabs);
       statusStore.setInfo(`Loaded ${formattedTabs.length} tabs`);
-
-      // Load recent folders
-      recentFolders = await getRecentTabSaverFolders();
     } catch (error) {
-      console.error('Error loading tabs:', error);
-      statusStore.setError('Failed to load tabs');
+      console.error("Error loading tabs:", error);
+      statusStore.setError("Failed to load tabs");
     } finally {
       isLoading = false;
     }
@@ -41,32 +45,34 @@
 
   async function saveSelectedTabs() {
     let selectedTabsList = [];
-    selectedTabs.subscribe(tabs => selectedTabsList = tabs)();
+    selectedTabs.subscribe((tabs) => (selectedTabsList = tabs))();
 
     if (selectedTabsList.length === 0) {
-      statusStore.setError('Please select at least one tab to save');
+      statusStore.setError("Please select at least one tab to save");
       return;
     }
 
     isSaving = true;
     try {
-      const response = await chrome.runtime.sendMessage({
-        action: 'saveTabsToBookmarks',
+      // Save to Chrome bookmarks
+      const response = (await chrome.runtime.sendMessage({
+        action: "saveTabsToBookmarks",
         tabs: $selectedTabs,
-        customFolderName: $customFolderNameStore.trim()
-      }) as SaveTabsResponse;
+        customFolderName: $customFolderNameStore.trim(),
+      })) as SaveTabsResponse;
 
       if (response.success) {
-        statusStore.setSuccess(`Saved ${$selectedTabs.length} tabs to "${response.folderName}"`);
-        customFolderNameStore.set('');
-        // Refresh recent folders
-        recentFolders = await getRecentTabSaverFolders();
+        statusStore.setSuccess(
+          `Saved ${$selectedTabs.length} tabs to "${response.folderName}"`,
+        );
+        customFolderNameStore.set("");
+        refreshTrigger.update((n) => n + 1); // Refresh archive view if open
       } else {
-        statusStore.setError(response.error || 'Failed to save tabs');
+        statusStore.setError(response.error || "Failed to save tabs");
       }
     } catch (error) {
-      console.error('Error saving tabs:', error);
-      statusStore.setError('Failed to save tabs');
+      console.error("Error saving tabs:", error);
+      statusStore.setError("Failed to save tabs");
     } finally {
       isSaving = false;
     }
@@ -74,23 +80,29 @@
 
   async function closeSelectedTabs() {
     if ($selectedTabs.length === 0) {
-      statusStore.setError('Please select at least one tab to close');
+      statusStore.setError("Please select at least one tab to close");
       return;
     }
 
-    const tabIds = $selectedTabs.map(tab => tab.id);
-    if (!confirm(`Close ${tabIds.length} selected tab${tabIds.length === 1 ? '' : 's'}?`)) {
+    const tabIds = $selectedTabs.map((tab) => tab.id);
+    if (
+      !confirm(
+        `Close ${tabIds.length} selected tab${tabIds.length === 1 ? "" : "s"}?`,
+      )
+    ) {
       return;
     }
 
     isClosing = true;
     try {
       await chrome.tabs.remove(tabIds);
-      statusStore.setSuccess(`Closed ${tabIds.length} tab${tabIds.length === 1 ? '' : 's'}`);
+      statusStore.setSuccess(
+        `Closed ${tabIds.length} tab${tabIds.length === 1 ? "" : "s"}`,
+      );
       setTimeout(() => window.location.reload(), 1000);
     } catch (error) {
-      console.error('Error closing tabs:', error);
-      statusStore.setError('Failed to close tabs');
+      console.error("Error closing tabs:", error);
+      statusStore.setError("Failed to close tabs");
     } finally {
       isClosing = false;
     }
@@ -103,65 +115,41 @@
     }
   }
 
-  async function viewFolderBookmarks(folder) {
-    try {
-      const bookmarks = await chrome.bookmarks.getChildren(folder.id);
-      folderBookmarks = bookmarks.filter(bookmark => bookmark.url).map(bookmark => ({
-        id: bookmark.id,
-        title: bookmark.title,
-        url: bookmark.url,
-        dateAdded: bookmark.dateAdded,
-        selected: false
-      }));
-      selectedBookmarks = [];
-      selectedFolder = folder;
-      currentView = 'bookmarks';
-      statusStore.setInfo(`Viewing ${folderBookmarks.length} bookmarks from "${folder.title}"`);
-    } catch (error) {
-      statusStore.setError('Failed to load bookmark folder');
-    }
-  }
-
-  function toggleBookmark(bookmarkId) {
-    folderBookmarks = folderBookmarks.map(bookmark =>
-      bookmark.id === bookmarkId
-        ? { ...bookmark, selected: !bookmark.selected }
-        : bookmark
-    );
-    selectedBookmarks = folderBookmarks.filter(bookmark => bookmark.selected);
-  }
-
-  function toggleAllBookmarks() {
-    const allSelected = folderBookmarks.every(bookmark => bookmark.selected);
-    folderBookmarks = folderBookmarks.map(bookmark => ({
-      ...bookmark,
-      selected: !allSelected
-    }));
-    selectedBookmarks = folderBookmarks.filter(bookmark => bookmark.selected);
-  }
-
-  async function openSelectedBookmarks() {
-    if (selectedBookmarks.length === 0) {
-      statusStore.setError('Please select bookmarks to open');
+  async function handleDedupe() {
+    if (
+      !confirm(
+        "This will scan all TabSaver archive folders and remove duplicate bookmarks, keeping only the most recent version. Continue?",
+      )
+    ) {
       return;
     }
 
-    try {
-      for (const bookmark of selectedBookmarks) {
-        await chrome.tabs.create({ url: bookmark.url, active: false });
-      }
-      statusStore.setSuccess(`Opened ${selectedBookmarks.length} bookmark${selectedBookmarks.length === 1 ? '' : 's'}`);
-    } catch (error) {
-      statusStore.setError('Failed to open bookmarks');
-    }
-  }
+    isDeduping = true;
+    dedupeProgress = 0;
+    dedupeStatus = "Initializing...";
 
-  async function openFolder(folder) {
     try {
-      await openBookmarkFolder(folder.id);
-      statusStore.setSuccess(`Opened ${folder.tabCount} tab${folder.tabCount === 1 ? '' : 's'} from "${folder.title}"`);
-    } catch (error) {
-      statusStore.setError('Failed to open bookmark folder');
+      const stats = await deduplicateBookmarks((message, percentage) => {
+        dedupeStatus = message;
+        dedupeProgress = percentage;
+      });
+
+      let successMsg = `Scanned ${stats.scanned} bookmarks. Removed ${stats.removed} duplicates.`;
+      if (stats.foldersRemoved > 0) {
+        successMsg += ` Cleaned up ${stats.foldersRemoved} empty folders.`;
+      }
+
+      statusStore.setSuccess(successMsg);
+
+      // Signal refresh using store
+      refreshTrigger.update((n) => n + 1);
+    } catch (err) {
+      console.error("Dedupe failed:", err);
+      statusStore.setError("Failed to deduplicate bookmarks");
+    } finally {
+      isDeduping = false;
+      dedupeProgress = 0;
+      dedupeStatus = "";
     }
   }
 
@@ -171,26 +159,62 @@
       const url = new URL(tab.url);
       return `https://www.google.com/s2/favicons?domain=${url.hostname}&sz=16`;
     } catch {
-      return 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjE2IiBoZWlnaHQ9IjE2IiByeD0iMiIgZmlsbD0iIzZCNzI4MCIvPgo8L3N2Zz4K';
+      return "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjE2IiBoZWlnaHQ9IjE2IiByeD0iMiIgZmlsbD0iIzZCNzI4MCIvPgo8L3N2Zz4K";
     }
   }
 </script>
 
 <div class="container glass-container">
+  <!-- Dedupe Modal Overlay -->
+  {#if isDeduping}
+    <div class="modal-overlay">
+      <div class="modal-content glass-panel">
+        <div class="spinner-large"></div>
+        <h3>Deduplicating Bookmarks</h3>
+        <p class="status-text-large">{dedupeStatus}</p>
+        <div class="progress-bar-container-large">
+          <div
+            class="progress-bar-large"
+            style="width: {dedupeProgress}%"
+          ></div>
+        </div>
+        <span class="percentage-large">{Math.round(dedupeProgress)}%</span>
+      </div>
+    </div>
+  {/if}
+
   <!-- Header -->
   <div class="header glass-panel">
     <div class="header-content">
       <div class="logo-section">
         <div class="icon-wrapper">
-          <svg class="w-6 h-6 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z"></path>
+          <svg
+            class="w-6 h-6 text-cyan-400"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z"
+            ></path>
           </svg>
         </div>
-        <h2>TabSaver {#if currentView === 'tabs' && $selectedTabs.length > 0}({$selectedTabs.length} selected){/if}</h2>
+        <h2>
+          TabSaver {#if currentView === "tabs" && $selectedTabs.length > 0}({$selectedTabs.length}
+            selected){/if}
+        </h2>
       </div>
       <div class="header-actions">
-        {#if currentView !== 'tabs'}
-          <button on:click={() => currentView = 'tabs'} class="home-btn glass-button" title="Back to Current Tabs" aria-label="Back to Current Tabs">
+        {#if currentView !== "tabs"}
+          <button
+            on:click={() => (currentView = "tabs")}
+            class="home-btn glass-button"
+            title="Back to Current Tabs"
+            aria-label="Back to Current Tabs"
+          >
             <i class="fas fa-home"></i>
           </button>
         {/if}
@@ -203,51 +227,74 @@
     <!-- Sidebar -->
     <div class="sidebar glass-panel">
       <div class="sidebar-content">
-        {#if currentView === 'tabs'}
-          <button on:click={saveSelectedTabs} disabled={$selectedTabs.length === 0 || isSaving} class="sidebar-btn save-btn">
+        {#if currentView === "tabs"}
+          <button
+            on:click={saveSelectedTabs}
+            disabled={$selectedTabs.length === 0 || isSaving}
+            class="sidebar-btn save-btn"
+          >
             <i class="fas fa-bookmark"></i>
             <span>Save</span>
           </button>
-          <button on:click={closeSelectedTabs} disabled={$selectedTabs.length === 0 || isClosing} class="sidebar-btn close-btn">
+          <button
+            on:click={closeSelectedTabs}
+            disabled={$selectedTabs.length === 0 || isClosing}
+            class="sidebar-btn close-btn"
+          >
             <i class="fas fa-times"></i>
             <span>Close</span>
           </button>
-          <button on:click={saveAndClose} disabled={$selectedTabs.length === 0 || isSaving || isClosing} class="sidebar-btn save-close-btn">
+          <button
+            on:click={saveAndClose}
+            disabled={$selectedTabs.length === 0 || isSaving || isClosing}
+            class="sidebar-btn save-close-btn"
+          >
             <i class="fas fa-save"></i>
             <span>Save & Close</span>
           </button>
-          <button on:click={() => currentView = 'folders'} class="sidebar-btn archive-btn">
+          <button
+            on:click={() => (currentView = "archive")}
+            class="sidebar-btn archive-btn"
+          >
             <i class="fas fa-archive"></i>
             <span>Archive</span>
           </button>
-          <button on:click={() => window.location.reload()} class="sidebar-btn refresh-btn">
+          <button
+            on:click={() => window.location.reload()}
+            class="sidebar-btn refresh-btn"
+          >
             <i class="fas fa-sync-alt"></i>
             <span>Refresh</span>
           </button>
 
           <div class="sidebar-input">
-            <label class="input-label" for="folder-name-input">Folder Name:</label>
+            <label class="input-label" for="folder-name-input"
+              >Collection Name:</label
+            >
             <input
               id="folder-name-input"
               type="text"
               bind:value={$customFolderNameStore}
-              placeholder="Custom name"
+              placeholder="Optional name"
               class="glass-input sidebar-input-field"
             />
           </div>
-        {:else if currentView === 'folders'}
-          <button on:click={() => currentView = 'tabs'} class="sidebar-btn back-btn">
+        {:else}
+          <button
+            on:click={() => (currentView = "tabs")}
+            class="sidebar-btn back-btn"
+          >
             <i class="fas fa-arrow-left"></i>
             <span>Back to Tabs</span>
           </button>
-        {:else if currentView === 'bookmarks'}
-          <button on:click={() => currentView = 'folders'} class="sidebar-btn back-btn">
-            <i class="fas fa-arrow-left"></i>
-            <span>Back to Archive</span>
-          </button>
-          <button on:click={openSelectedBookmarks} disabled={selectedBookmarks.length === 0} class="sidebar-btn open-btn">
-            <i class="fas fa-external-link-alt"></i>
-            <span>Open Selected</span>
+
+          <button
+            on:click={handleDedupe}
+            disabled={isDeduping}
+            class="sidebar-btn dedupe-btn"
+          >
+            <i class="fas fa-magic"></i>
+            <span>Dedupe</span>
           </button>
         {/if}
       </div>
@@ -255,132 +302,56 @@
 
     <!-- Content Area -->
     <div class="content-area">
-      <!-- Content Header -->
-      {#if currentView === 'folders'}
-        <div class="content-header glass-panel">
-          <h3>Bookmark Archive</h3>
-          <p class="view-description">Click a folder to view bookmarks, or click count to open all tabs</p>
-        </div>
-      {:else if currentView === 'bookmarks'}
-        <div class="content-header glass-panel">
-          <div class="breadcrumb">
-            <span class="folder-title">"{selectedFolder.title}" ({selectedBookmarks.length} selected)</span>
-          </div>
-        </div>
-      {/if}
-
       <!-- Table Container -->
       <div class="table-container glass-panel">
-    {#if isLoading}
-      <div class="loading-state">
-        <div class="spinner"></div>
-        <p>Loading...</p>
-      </div>
-    {:else if currentView === 'tabs'}
-      <table class="tabs-table">
-        <thead>
-          <tr>
-            <th class="checkbox-column">
-              <input
-                type="checkbox"
-                on:change={tabsActions.toggleSelectAll}
-                class="glass-checkbox"
-                title="Select All Tabs"
-              />
-            </th>
-            <th class="title-column">Title</th>
-            <th class="url-column">URL</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each $tabsStore as tab (tab.id)}
-            <tr class="tab-row" class:selected={tab.selected}>
-              <td class="checkbox-cell">
-                <input
-                  type="checkbox"
-                  checked={tab.selected}
-                  on:change={() => tabsActions.toggleTab(tab.id)}
-                  class="glass-checkbox"
-                />
-              </td>
-              <td class="title-cell">
-                <div class="tab-info">
-                  <img src={getFaviconUrl(tab)} alt="" class="favicon" />
-                  <span class="tab-title">{tab.title}</span>
-                </div>
-              </td>
-              <td class="url-cell">
-                <span class="tab-url">{tab.url}</span>
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    {:else if currentView === 'folders'}
-      <div class="folders-view">
-        {#each recentFolders as folder}
-          <div class="folder-row">
-            <button class="folder-main" on:click={() => viewFolderBookmarks(folder)}>
-              <div class="folder-info">
-                <i class="fas fa-folder folder-icon"></i>
-                <span class="folder-name">{folder.title}</span>
-                <span class="folder-date">{new Date(folder.dateAdded).toLocaleDateString()}</span>
-              </div>
-            </button>
-            <button class="folder-count-btn" on:click={() => openFolder(folder)} title="Open all tabs">
-              {folder.tabCount}
-            </button>
+        {#if isLoading}
+          <div class="loading-state">
+            <div class="spinner"></div>
+            <p>Loading...</p>
           </div>
-        {/each}
-      </div>
-    {:else if currentView === 'bookmarks'}
-      <table class="tabs-table">
-        <thead>
-          <tr>
-            <th class="checkbox-column">
-              <input
-                type="checkbox"
-                on:change={toggleAllBookmarks}
-                checked={folderBookmarks.length > 0 && folderBookmarks.every(bookmark => bookmark.selected)}
-                class="glass-checkbox"
-                title="Select All Bookmarks"
-              />
-            </th>
-            <th class="title-column">Bookmark</th>
-            <th class="url-column">URL</th>
-            <th class="action-column">Action</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each folderBookmarks as bookmark}
-            <tr class="tab-row" class:selected={bookmark.selected}>
-              <td class="checkbox-cell">
-                <input
-                  type="checkbox"
-                  checked={bookmark.selected}
-                  on:change={() => toggleBookmark(bookmark.id)}
-                  class="glass-checkbox"
-                />
-              </td>
-              <td class="title-cell">
-                <div class="tab-info">
-                  <img src={`https://www.google.com/s2/favicons?domain=${new URL(bookmark.url).hostname}&sz=16`} alt="" class="favicon" />
-                  <span class="tab-title">{bookmark.title}</span>
-                </div>
-              </td>
-              <td class="url-cell">
-                <span class="tab-url">{bookmark.url}</span>
-              </td>
-              <td class="action-cell">
-                <button class="open-btn" on:click={() => window.open(bookmark.url, '_blank')} aria-label="Open bookmark in new tab">
-                  <i class="fas fa-external-link-alt"></i>
-                </button>
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-      {/if}
+        {:else if currentView === "tabs"}
+          <table class="tabs-table">
+            <thead>
+              <tr>
+                <th class="checkbox-column">
+                  <input
+                    type="checkbox"
+                    on:change={tabsActions.toggleSelectAll}
+                    class="glass-checkbox"
+                    title="Select All Tabs"
+                  />
+                </th>
+                <th class="title-column">Title</th>
+                <th class="url-column">URL</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each $tabsStore as tab (tab.id)}
+                <tr class="tab-row" class:selected={tab.selected}>
+                  <td class="checkbox-cell">
+                    <input
+                      type="checkbox"
+                      checked={tab.selected}
+                      on:change={() => tabsActions.toggleTab(tab.id)}
+                      class="glass-checkbox"
+                    />
+                  </td>
+                  <td class="title-cell">
+                    <div class="tab-info">
+                      <img src={getFaviconUrl(tab)} alt="" class="favicon" />
+                      <span class="tab-title">{tab.title}</span>
+                    </div>
+                  </td>
+                  <td class="url-cell">
+                    <span class="tab-url">{tab.url}</span>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {:else if currentView === "archive"}
+          <ArchiveView />
+        {/if}
       </div>
     </div>
   </div>
@@ -398,14 +369,16 @@
 </div>
 
 <style>
-  :global(html), :global(body) {
+  :global(html),
+  :global(body) {
     width: 800px;
     height: 650px;
     margin: 0;
     padding: 0;
     overflow: hidden;
-    background: linear-gradient(135deg, #0f172a 0%, #1e293b  50%, #334155 100%);
-    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #334155 100%);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI",
+      Roboto, sans-serif;
   }
 
   :global(#app) {
@@ -425,8 +398,92 @@
     position: relative;
   }
 
+  /* Modal Overlay */
+  .modal-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(8px);
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .modal-content {
+    width: 300px;
+    padding: 30px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    background: linear-gradient(
+      135deg,
+      rgba(30, 41, 59, 0.95),
+      rgba(15, 23, 42, 0.95)
+    );
+    border: 1px solid rgba(6, 182, 212, 0.4);
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+    border-radius: 16px;
+  }
+
+  .modal-content h3 {
+    margin: 0;
+    color: #ffffff;
+    font-size: 18px;
+    font-weight: 700;
+  }
+
+  .status-text-large {
+    color: #06b6d4;
+    font-size: 13px;
+    text-align: center;
+    min-height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .spinner-large {
+    width: 48px;
+    height: 48px;
+    border: 4px solid rgba(6, 182, 212, 0.3);
+    border-top: 4px solid #06b6d4;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+
+  .progress-bar-container-large {
+    width: 100%;
+    height: 8px;
+    background: rgba(0, 0, 0, 0.4);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .progress-bar-large {
+    height: 100%;
+    background: linear-gradient(90deg, #06b6d4, #22c55e);
+    border-radius: 4px;
+    transition: width 0.3s ease;
+  }
+
+  .percentage-large {
+    font-size: 14px;
+    font-weight: 700;
+    color: #ffffff;
+  }
+
   .glass-container {
-    background: linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(30, 41, 59, 0.90) 50%, rgba(51, 65, 85, 0.85) 100%);
+    background: linear-gradient(
+      135deg,
+      rgba(15, 23, 42, 0.95) 0%,
+      rgba(30, 41, 59, 0.9) 50%,
+      rgba(51, 65, 85, 0.85) 100%
+    );
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
     border: 1px solid rgba(6, 182, 212, 0.3);
@@ -446,7 +503,11 @@
   }
 
   .glass-panel {
-    background: linear-gradient(135deg, rgba(51, 65, 85, 0.8) 0%, rgba(30, 41, 59, 0.9) 100%);
+    background: linear-gradient(
+      135deg,
+      rgba(51, 65, 85, 0.8) 0%,
+      rgba(30, 41, 59, 0.9) 100%
+    );
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
     border: 1px solid rgba(6, 182, 212, 0.2);
@@ -483,7 +544,11 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: linear-gradient(135deg, rgba(6, 182, 212, 0.8), rgba(8, 145, 178, 0.8));
+    background: linear-gradient(
+      135deg,
+      rgba(6, 182, 212, 0.8),
+      rgba(8, 145, 178, 0.8)
+    );
     border-radius: 8px;
     box-shadow: 0 4px 12px rgba(6, 182, 212, 0.3);
   }
@@ -502,7 +567,11 @@
   }
 
   .home-btn {
-    background: linear-gradient(135deg, rgba(6, 182, 212, 0.8), rgba(8, 145, 178, 0.8));
+    background: linear-gradient(
+      135deg,
+      rgba(6, 182, 212, 0.8),
+      rgba(8, 145, 178, 0.8)
+    );
     color: white;
     border: 1px solid rgba(6, 182, 212, 0.3);
     padding: 8px 12px;
@@ -517,7 +586,11 @@
   }
 
   .home-btn:hover {
-    background: linear-gradient(135deg, rgba(8, 145, 178, 0.9), rgba(14, 116, 144, 0.9));
+    background: linear-gradient(
+      135deg,
+      rgba(8, 145, 178, 0.9),
+      rgba(14, 116, 144, 0.9)
+    );
     transform: translateY(-2px);
     box-shadow: 0 6px 20px rgba(6, 182, 212, 0.4);
   }
@@ -553,7 +626,11 @@
     padding: 12px 8px;
     border: 1px solid rgba(6, 182, 212, 0.2);
     border-radius: 12px;
-    background: linear-gradient(135deg, rgba(51, 65, 85, 0.9), rgba(30, 41, 59, 0.9));
+    background: linear-gradient(
+      135deg,
+      rgba(51, 65, 85, 0.9),
+      rgba(30, 41, 59, 0.9)
+    );
     backdrop-filter: blur(12px);
     color: #ffffff;
     font-size: 11px;
@@ -585,7 +662,11 @@
     border-color: rgba(16, 185, 129, 0.3);
   }
   .save-btn:hover:not(:disabled) {
-    background: linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(5, 150, 105, 0.2));
+    background: linear-gradient(
+      135deg,
+      rgba(16, 185, 129, 0.2),
+      rgba(5, 150, 105, 0.2)
+    );
     color: #10b981;
     border-color: rgba(16, 185, 129, 0.5);
   }
@@ -594,7 +675,11 @@
     border-color: rgba(239, 68, 68, 0.3);
   }
   .close-btn:hover:not(:disabled) {
-    background: linear-gradient(135deg, rgba(239, 68, 68, 0.2), rgba(220, 38, 38, 0.2));
+    background: linear-gradient(
+      135deg,
+      rgba(239, 68, 68, 0.2),
+      rgba(220, 38, 38, 0.2)
+    );
     color: #ef4444;
     border-color: rgba(239, 68, 68, 0.5);
   }
@@ -603,7 +688,11 @@
     border-color: rgba(245, 158, 11, 0.3);
   }
   .save-close-btn:hover:not(:disabled) {
-    background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(217, 119, 6, 0.2));
+    background: linear-gradient(
+      135deg,
+      rgba(245, 158, 11, 0.2),
+      rgba(217, 119, 6, 0.2)
+    );
     color: #f59e0b;
     border-color: rgba(245, 158, 11, 0.5);
   }
@@ -612,7 +701,11 @@
     border-color: rgba(59, 130, 246, 0.3);
   }
   .archive-btn:hover:not(:disabled) {
-    background: linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(37, 99, 235, 0.2));
+    background: linear-gradient(
+      135deg,
+      rgba(59, 130, 246, 0.2),
+      rgba(37, 99, 235, 0.2)
+    );
     color: #3b82f6;
     border-color: rgba(59, 130, 246, 0.5);
   }
@@ -621,7 +714,11 @@
     border-color: rgba(107, 114, 128, 0.3);
   }
   .refresh-btn:hover:not(:disabled) {
-    background: linear-gradient(135deg, rgba(107, 114, 128, 0.2), rgba(75, 85, 99, 0.2));
+    background: linear-gradient(
+      135deg,
+      rgba(107, 114, 128, 0.2),
+      rgba(75, 85, 99, 0.2)
+    );
     color: #6b7280;
     border-color: rgba(107, 114, 128, 0.5);
   }
@@ -630,18 +727,26 @@
     border-color: rgba(156, 163, 175, 0.3);
   }
   .back-btn:hover:not(:disabled) {
-    background: linear-gradient(135deg, rgba(156, 163, 175, 0.2), rgba(107, 114, 128, 0.2));
+    background: linear-gradient(
+      135deg,
+      rgba(156, 163, 175, 0.2),
+      rgba(107, 114, 128, 0.2)
+    );
     color: #9ca3af;
     border-color: rgba(156, 163, 175, 0.5);
   }
 
-  .open-btn {
-    border-color: rgba(34, 197, 94, 0.3);
+  .dedupe-btn {
+    border-color: rgba(168, 85, 247, 0.3);
   }
-  .open-btn:hover:not(:disabled) {
-    background: linear-gradient(135deg, rgba(34, 197, 94, 0.2), rgba(22, 163, 74, 0.2));
-    color: #22c55e;
-    border-color: rgba(34, 197, 94, 0.5);
+  .dedupe-btn:hover:not(:disabled) {
+    background: linear-gradient(
+      135deg,
+      rgba(168, 85, 247, 0.2),
+      rgba(147, 51, 234, 0.2)
+    );
+    color: #d8b4fe;
+    border-color: rgba(168, 85, 247, 0.5);
   }
 
   /* Sidebar Input */
@@ -691,63 +796,6 @@
     min-width: 0;
   }
 
-  .content-header {
-    padding: 12px 16px;
-    border-bottom: 1px solid rgba(6, 182, 212, 0.2);
-  }
-
-  .content-header h3 {
-    margin: 0 0 8px 0;
-    color: #ffffff;
-    font-size: 16px;
-    font-weight: 700;
-    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
-  }
-
-  .view-description {
-    margin: 0;
-    color: rgba(255, 255, 255, 0.7);
-    font-size: 12px;
-    line-height: 1.4;
-  }
-
-  .breadcrumb {
-    display: flex;
-    align-items: center;
-    margin-bottom: 12px;
-  }
-
-  .folder-title {
-    color: #06b6d4;
-    font-weight: 600;
-    font-size: 14px;
-  }
-
-  .checkbox-label {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    color: #ffffff;
-    font-weight: 600;
-    font-size: 13px;
-    cursor: pointer;
-  }
-
-  .glass-checkbox {
-    width: 16px;
-    height: 16px;
-    border: 2px solid rgba(6, 182, 212, 0.5);
-    border-radius: 4px;
-    background: rgba(51, 65, 85, 0.8);
-    cursor: pointer;
-    transition: all 0.2s ease;
-  }
-
-  .glass-checkbox:checked {
-    background: linear-gradient(135deg, #06b6d4, #0891b2);
-    border-color: #06b6d4;
-  }
-
   /* Table Container */
   .table-container {
     flex: 1;
@@ -777,8 +825,12 @@
   }
 
   @keyframes spin {
-    0% { transform: rotate(0deg); }
-    100% { transform: rotate(360deg); }
+    0% {
+      transform: rotate(0deg);
+    }
+    100% {
+      transform: rotate(360deg);
+    }
   }
 
   /* Tables */
@@ -786,14 +838,22 @@
     width: 100%;
     border-collapse: separate;
     border-spacing: 0;
-    background: linear-gradient(135deg, rgba(51, 65, 85, 0.6), rgba(30, 41, 59, 0.8));
+    background: linear-gradient(
+      135deg,
+      rgba(51, 65, 85, 0.6),
+      rgba(30, 41, 59, 0.8)
+    );
     backdrop-filter: blur(8px);
     border-radius: 8px;
     overflow: hidden;
   }
 
   .tabs-table thead th {
-    background: linear-gradient(135deg, rgba(15, 23, 42, 0.9), rgba(30, 41, 59, 0.9));
+    background: linear-gradient(
+      135deg,
+      rgba(15, 23, 42, 0.9),
+      rgba(30, 41, 59, 0.9)
+    );
     color: #ffffff;
     font-weight: 700;
     padding: 12px 8px;
@@ -807,10 +867,18 @@
     letter-spacing: 0.5px;
   }
 
-  .checkbox-column { width: 40px; }
-  .title-column { width: 50%; }
-  .url-column { width: 50%; }
-  .action-column { width: 60px; }
+  .checkbox-column {
+    width: 40px;
+  }
+  .title-column {
+    width: 50%;
+  }
+  .url-column {
+    width: 50%;
+  }
+  .action-column {
+    width: 60px;
+  }
 
   .tab-row {
     transition: all 0.2s ease;
@@ -818,11 +886,19 @@
   }
 
   .tab-row:hover {
-    background: linear-gradient(135deg, rgba(6, 182, 212, 0.1), rgba(8, 145, 178, 0.1));
+    background: linear-gradient(
+      135deg,
+      rgba(6, 182, 212, 0.1),
+      rgba(8, 145, 178, 0.1)
+    );
   }
 
   .tab-row.selected {
-    background: linear-gradient(135deg, rgba(6, 182, 212, 0.2), rgba(8, 145, 178, 0.2));
+    background: linear-gradient(
+      135deg,
+      rgba(6, 182, 212, 0.2),
+      rgba(8, 145, 178, 0.2)
+    );
     border-color: rgba(6, 182, 212, 0.4);
   }
 
@@ -862,12 +938,14 @@
     white-space: nowrap;
   }
 
-
-
   /* Status Bar */
   .status {
     height: 32px;
-    background: linear-gradient(135deg, rgba(0, 0, 0, 0.9), rgba(15, 23, 42, 0.9));
+    background: linear-gradient(
+      135deg,
+      rgba(0, 0, 0, 0.9),
+      rgba(15, 23, 42, 0.9)
+    );
     backdrop-filter: blur(12px);
     border-top: 1px solid rgba(6, 182, 212, 0.3);
     border-radius: 0 0 20px 20px;
@@ -901,117 +979,49 @@
     text-shadow: 0 0 8px rgba(6, 182, 212, 0.3);
   }
 
-  /* Folder Views */
-  .folders-view {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 8px 0;
-  }
-
-  .folder-row {
-    display: flex;
-    align-items: center;
-    background: linear-gradient(135deg, rgba(51, 65, 85, 0.8), rgba(30, 41, 59, 0.8));
-    border: 1px solid rgba(6, 182, 212, 0.2);
-    border-radius: 12px;
-    overflow: hidden;
-    transition: all 0.3s ease;
-    backdrop-filter: blur(8px);
-  }
-
-  .folder-row:hover {
-    background: linear-gradient(135deg, rgba(6, 182, 212, 0.1), rgba(8, 145, 178, 0.1));
-    transform: translateY(-2px);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
-    border-color: rgba(6, 182, 212, 0.4);
-  }
-
-  .folder-main {
-    flex: 1;
-    background: none;
-    border: none;
-    padding: 16px;
-    text-align: left;
-    cursor: pointer;
-    color: #ffffff;
-  }
-
-  .folder-info {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-
-  .folder-icon {
-    color: #06b6d4;
-    font-size: 18px;
-  }
-
-  .folder-name {
-    font-weight: 600;
-    color: #ffffff;
-    flex: 1;
-    font-size: 14px;
-  }
-
-  .folder-date {
-    font-size: 11px;
-    color: rgba(255, 255, 255, 0.6);
-    margin-top: 2px;
-  }
-
-  .folder-count-btn {
-    background: linear-gradient(135deg, #06b6d4, #0891b2);
-    color: white;
-    border: none;
-    padding: 12px 20px;
-    font-weight: 700;
-    font-size: 13px;
-    cursor: pointer;
-    transition: all 0.3s ease;
-    min-width: 60px;
-    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
-  }
-
-  .folder-count-btn:hover {
-    background: linear-gradient(135deg, #0891b2, #0e7490);
-    box-shadow: 0 4px 12px rgba(6, 182, 212, 0.3);
-  }
-
-  .action-cell {
-    text-align: center;
-  }
-
-  .action-cell .open-btn {
-    background: linear-gradient(135deg, #22c55e, #16a34a);
-    color: white;
-    border: 1px solid rgba(34, 197, 94, 0.3);
-    padding: 8px 12px;
-    border-radius: 8px;
-    cursor: pointer;
-    transition: all 0.3s ease;
-    backdrop-filter: blur(8px);
-    font-size: 12px;
-  }
-
-  .action-cell .open-btn:hover {
-    background: linear-gradient(135deg, #16a34a, #15803d);
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(34, 197, 94, 0.3);
-  }
   /* Glass Button Utility */
   .glass-button {
-    background: linear-gradient(135deg, rgba(51, 65, 85, 0.8), rgba(30, 41, 59, 0.8));
+    background: linear-gradient(
+      135deg,
+      rgba(51, 65, 85, 0.8),
+      rgba(30, 41, 59, 0.8)
+    );
     backdrop-filter: blur(12px);
     border: 1px solid rgba(6, 182, 212, 0.3);
     transition: all 0.3s ease;
   }
 
   .glass-button:hover {
-    background: linear-gradient(135deg, rgba(6, 182, 212, 0.2), rgba(8, 145, 178, 0.2));
-    border-color: rgba(6, 182, 212, 0.5);
-    transform: translateY(-1px);
-    box-shadow: 0 4px 16px rgba(6, 182, 212, 0.2);
+    background: linear-gradient(
+      135deg,
+      rgba(6, 182, 212, 0.2),
+      rgba(8, 145, 178, 0.2)
+    );
+  }
+
+  /* Checkbox logic */
+  .checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #ffffff;
+    font-weight: 600;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .glass-checkbox {
+    width: 16px;
+    height: 16px;
+    border: 2px solid rgba(6, 182, 212, 0.5);
+    border-radius: 4px;
+    background: rgba(51, 65, 85, 0.8);
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  .glass-checkbox:checked {
+    background: linear-gradient(135deg, #06b6d4, #0891b2);
+    border-color: #06b6d4;
   }
 </style>

@@ -1,6 +1,6 @@
 {
   "name": "tabsaver",
-  "version": "2.0.0",
+  "version": "2.1.1",
   "description": "A modern Chrome extension to save tabs to organized bookmark folders with Apple Tahoe Liquid Glass UI",
   "private": true,
   "type": "module",

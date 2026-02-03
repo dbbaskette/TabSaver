@@ -627,12 +627,12 @@
       0 20px 40px rgba(0, 0, 0, 0.4),
       0 8px 16px rgba(0, 0, 0, 0.2),
       inset 0 1px 0 rgba(6, 182, 212, 0.2);
-    padding: 8px 8px 40px 8px;
+    padding: 8px;
     width: 100%;
     height: 100%;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 4px;
     overflow: hidden;
     box-sizing: border-box;
   }
@@ -646,17 +646,16 @@
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
     border: 1px solid rgba(6, 182, 212, 0.2);
-    border-radius: 12px;
-    padding: 8px;
+    border-radius: 10px;
+    padding: 6px;
     box-shadow:
       0 8px 32px rgba(0, 0, 0, 0.3),
       inset 0 1px 0 rgba(6, 182, 212, 0.1);
-    flex-shrink: 0;
   }
 
   /* Header */
   .header {
-    padding: 12px 16px;
+    padding: 8px 12px;
     border-bottom: 1px solid rgba(6, 182, 212, 0.3);
     flex-shrink: 0;
   }
@@ -734,8 +733,9 @@
   .main-layout {
     display: flex;
     flex: 1;
-    gap: 8px;
+    gap: 6px;
     min-height: 0;
+    overflow: hidden;
   }
 
   /* Sidebar */
@@ -1176,7 +1176,8 @@
 
   /* Status Bar */
   .status {
-    height: 32px;
+    height: 28px;
+    min-height: 28px;
     background: linear-gradient(
       135deg,
       rgba(0, 0, 0, 0.9),
@@ -1184,12 +1185,11 @@
     );
     backdrop-filter: blur(12px);
     border-top: 1px solid rgba(6, 182, 212, 0.3);
-    border-radius: 0 0 20px 20px;
+    border-radius: 0 0 16px 16px;
     display: flex;
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
-    box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.3);
   }
 
   .status-message {

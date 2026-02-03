@@ -6,6 +6,34 @@ export interface Tab {
   selected: boolean;
   frozen?: boolean;
   frozenAt?: number;
+  memoryEstimate?: MemoryEstimate;
+}
+
+export type MemoryCategory = 'video' | 'webapp' | 'social' | 'standard' | 'frozen' | 'internal';
+
+export interface MemoryEstimate {
+  tabId: number;
+  estimatedMB: number;
+  confidence: 'high' | 'medium' | 'low';
+  category: MemoryCategory;
+}
+
+export interface SavingsRecord {
+  date: string;  // YYYY-MM-DD
+  tabsFrozen: number;
+  estimatedSavedMB: number;
+}
+
+export interface SavingsHistory {
+  records: SavingsRecord[];
+  totalSavedMB: number;
+  totalTabsFrozen: number;
+}
+
+export interface FreezeSuggestion {
+  tabIds: number[];
+  reason: string;
+  estimatedSavingsMB: number;
 }
 
 export interface FrozenTabState {

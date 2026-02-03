@@ -1,5 +1,5 @@
 import { writable, derived } from 'svelte/store';
-import type { Tab, Status, FrozenTabState } from './types';
+import type { Tab, Status, FrozenTabState, SavingsHistory } from './types';
 
 // Tabs store
 export const tabsStore = writable<Tab[]>([]);
@@ -67,6 +67,36 @@ export const frozenTabsCount = derived(
 export const selectedFrozenTabs = derived(
   [tabsStore, frozenTabsStore],
   ([$tabs, $frozenTabs]) => $tabs.filter(tab => tab.selected && $frozenTabs[tab.id])
+);
+
+// Savings history store
+export const savingsHistoryStore = writable<SavingsHistory>({
+  records: [],
+  totalSavedMB: 0,
+  totalTabsFrozen: 0,
+});
+
+// Total estimated memory usage
+export const totalMemoryUsage = derived(
+  tabsStore,
+  $tabs => $tabs.reduce((sum, tab) => sum + (tab.memoryEstimate?.estimatedMB || 0), 0)
+);
+
+// Memory saved by frozen tabs
+export const memorySaved = derived(
+  [tabsStore, frozenTabsStore],
+  ([$tabs, $frozenTabs]) => {
+    let saved = 0;
+    for (const tab of $tabs) {
+      if (tab.frozen && $frozenTabs[tab.id]) {
+        // Estimate what the original tab would have used
+        const originalUrl = $frozenTabs[tab.id].originalUrl;
+        // Use a simple heuristic - assume original was ~50MB average, frozen is ~3MB
+        saved += 47; // Rough average savings per frozen tab
+      }
+    }
+    return saved;
+  }
 );
 
 // Helper functions for tabs store

@@ -12,7 +12,9 @@
   } from "../../lib/stores";
   import type { Tab, SaveTabsResponse, FreezeTabsResponse, FrozenTabState } from "../../lib/types";
   import { deduplicateBookmarks } from "../../lib/bookmark-utils";
+  import { estimateTabMemory, formatMemory, getMemoryLevel } from "../../lib/memory-utils";
   import ArchiveView from "./components/ArchiveView.svelte";
+  import DashboardView from "./components/DashboardView.svelte";
 
   let isLoading = true;
   let isSaving = false;
@@ -22,7 +24,8 @@
   let isDeduping = false;
   let dedupeProgress = 0;
   let dedupeStatus = "";
-  let currentView = "tabs"; // 'tabs', 'archive'
+  let currentView = "tabs"; // 'tabs', 'archive', 'dashboard'
+  let showMemoryColumn = false;
 
   onMount(async () => {
     try {
@@ -37,15 +40,23 @@
       const formattedTabs: Tab[] = tabs.map((tab) => {
         const isFrozen = !!frozenTabs[tab.id!] || tab.url?.includes('frozen.html');
         const frozenState = frozenTabs[tab.id!];
-        return {
+        const tabUrl = isFrozen && frozenState ? frozenState.originalUrl : (tab.url || "");
+        const formattedTab: Tab = {
           id: tab.id!,
           title: isFrozen && frozenState ? frozenState.title : (tab.title || "Untitled"),
-          url: isFrozen && frozenState ? frozenState.originalUrl : (tab.url || ""),
+          url: tabUrl,
           favIconUrl: isFrozen && frozenState ? frozenState.favIconUrl : tab.favIconUrl,
           selected: false,
           frozen: isFrozen,
           frozenAt: frozenState?.frozenAt,
         };
+        // Add memory estimate
+        formattedTab.memoryEstimate = estimateTabMemory({
+          id: formattedTab.id,
+          url: tabUrl,
+          frozen: isFrozen,
+        });
+        return formattedTab;
       });
 
       tabsStore.set(formattedTabs);
@@ -371,6 +382,14 @@
             <span>Archive</span>
           </button>
           <button
+            on:click={() => (currentView = "dashboard")}
+            class="sidebar-btn dashboard-btn"
+            title="View memory usage dashboard"
+          >
+            <span class="btn-emoji">📊</span>
+            <span>Dashboard</span>
+          </button>
+          <button
             on:click={() => window.location.reload()}
             class="sidebar-btn refresh-btn"
           >
@@ -465,6 +484,8 @@
           </table>
         {:else if currentView === "archive"}
           <ArchiveView />
+        {:else if currentView === "dashboard"}
+          <DashboardView />
         {/if}
       </div>
     </div>
@@ -719,25 +740,27 @@
 
   /* Sidebar */
   .sidebar {
-    width: 120px;
+    width: 110px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
+    overflow-y: auto;
+    overflow-x: hidden;
   }
 
   .sidebar-content {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    padding: 8px;
+    gap: 4px;
+    padding: 6px;
   }
 
   .sidebar-btn {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 4px;
-    padding: 12px 8px;
+    gap: 2px;
+    padding: 8px 6px;
     border: 1px solid rgba(6, 182, 212, 0.2);
     border-radius: 12px;
     background: linear-gradient(
@@ -767,8 +790,8 @@
   }
 
   .sidebar-btn i {
-    font-size: 16px;
-    margin-bottom: 2px;
+    font-size: 14px;
+    margin-bottom: 1px;
   }
 
   /* Button Colors */
@@ -891,14 +914,28 @@
     border-color: rgba(251, 146, 60, 0.5);
   }
 
+  /* Dashboard Button */
+  .dashboard-btn {
+    border-color: rgba(34, 197, 94, 0.3);
+  }
+  .dashboard-btn:hover:not(:disabled) {
+    background: linear-gradient(
+      135deg,
+      rgba(34, 197, 94, 0.2),
+      rgba(22, 163, 74, 0.2)
+    );
+    color: #22c55e;
+    border-color: rgba(34, 197, 94, 0.5);
+  }
+
   .btn-emoji {
-    font-size: 16px;
+    font-size: 14px;
     line-height: 1;
   }
 
   /* Sidebar Input */
   .sidebar-input {
-    margin-top: 8px;
+    margin-top: 4px;
   }
 
   .input-label {
@@ -913,13 +950,13 @@
 
   .sidebar-input-field {
     width: 100%;
-    padding: 8px;
+    padding: 6px;
     border: 1px solid rgba(6, 182, 212, 0.3);
-    border-radius: 8px;
+    border-radius: 6px;
     background: rgba(51, 65, 85, 0.8);
     backdrop-filter: blur(8px);
     color: #ffffff;
-    font-size: 11px;
+    font-size: 10px;
     box-sizing: border-box;
   }
 

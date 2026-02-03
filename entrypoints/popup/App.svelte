@@ -529,7 +529,7 @@
   :global(html),
   :global(body) {
     width: 800px;
-    height: 750px;
+    height: 650px;
     margin: 0;
     padding: 0;
     overflow: hidden;
@@ -1013,7 +1013,7 @@
     overflow-y: auto;
     border-radius: 12px;
     min-height: 0;
-    max-height: 520px;
+    max-height: 480px;
   }
 
   /* Loading State */

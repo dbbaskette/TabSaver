@@ -440,14 +440,16 @@
             <span>Back to Tabs</span>
           </button>
 
-          <button
-            on:click={handleDedupe}
-            disabled={isDeduping}
-            class="sidebar-btn dedupe-btn"
-          >
-            <i class="fas fa-magic"></i>
-            <span>Dedupe</span>
-          </button>
+          {#if currentView === "archive"}
+            <button
+              on:click={handleDedupe}
+              disabled={isDeduping}
+              class="sidebar-btn dedupe-btn"
+            >
+              <i class="fas fa-magic"></i>
+              <span>Dedupe</span>
+            </button>
+          {/if}
         {/if}
       </div>
     </div>

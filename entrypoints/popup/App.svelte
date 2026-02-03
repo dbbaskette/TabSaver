@@ -7,14 +7,18 @@
     selectedTabs,
     tabsActions,
     refreshTrigger,
+    frozenTabsStore,
+    frozenTabsCount,
   } from "../../lib/stores";
-  import type { Tab, SaveTabsResponse } from "../../lib/types";
+  import type { Tab, SaveTabsResponse, FreezeTabsResponse, FrozenTabState } from "../../lib/types";
   import { deduplicateBookmarks } from "../../lib/bookmark-utils";
   import ArchiveView from "./components/ArchiveView.svelte";
 
   let isLoading = true;
   let isSaving = false;
   let isClosing = false;
+  let isFreezing = false;
+  let isThawing = false;
   let isDeduping = false;
   let dedupeProgress = 0;
   let dedupeStatus = "";
@@ -25,16 +29,31 @@
       // Get all tabs in current window
       const tabs = await chrome.tabs.query({ currentWindow: true });
 
-      const formattedTabs: Tab[] = tabs.map((tab) => ({
-        id: tab.id!,
-        title: tab.title || "Untitled",
-        url: tab.url || "",
-        favIconUrl: tab.favIconUrl,
-        selected: false,
-      }));
+      // Get frozen tabs state
+      const frozenResponse = await chrome.runtime.sendMessage({ action: "getFrozenTabs" });
+      const frozenTabs: Record<number, FrozenTabState> = frozenResponse?.frozenTabs || {};
+      frozenTabsStore.set(frozenTabs);
+
+      const formattedTabs: Tab[] = tabs.map((tab) => {
+        const isFrozen = !!frozenTabs[tab.id!] || tab.url?.includes('frozen.html');
+        const frozenState = frozenTabs[tab.id!];
+        return {
+          id: tab.id!,
+          title: isFrozen && frozenState ? frozenState.title : (tab.title || "Untitled"),
+          url: isFrozen && frozenState ? frozenState.originalUrl : (tab.url || ""),
+          favIconUrl: isFrozen && frozenState ? frozenState.favIconUrl : tab.favIconUrl,
+          selected: false,
+          frozen: isFrozen,
+          frozenAt: frozenState?.frozenAt,
+        };
+      });
 
       tabsStore.set(formattedTabs);
-      statusStore.setInfo(`Loaded ${formattedTabs.length} tabs`);
+      const frozenCount = formattedTabs.filter(t => t.frozen).length;
+      const infoMsg = frozenCount > 0
+        ? `Loaded ${formattedTabs.length} tabs (${frozenCount} frozen)`
+        : `Loaded ${formattedTabs.length} tabs`;
+      statusStore.setInfo(infoMsg);
     } catch (error) {
       console.error("Error loading tabs:", error);
       statusStore.setError("Failed to load tabs");
@@ -114,6 +133,81 @@
       setTimeout(async () => await closeSelectedTabs(), 500);
     }
   }
+
+  async function freezeSelectedTabs() {
+    // Filter out already frozen tabs and get only unfrozen selected tabs
+    const unfrozenSelectedTabs = $selectedTabs.filter(tab => !tab.frozen);
+
+    if (unfrozenSelectedTabs.length === 0) {
+      statusStore.setError("No unfrozen tabs selected to freeze");
+      return;
+    }
+
+    isFreezing = true;
+    try {
+      const tabIds = unfrozenSelectedTabs.map((tab) => tab.id);
+      const response = (await chrome.runtime.sendMessage({
+        action: "freezeTabs",
+        tabIds,
+      })) as FreezeTabsResponse;
+
+      if (response.success) {
+        let msg = `Froze ${response.frozenCount} tab${response.frozenCount === 1 ? "" : "s"}`;
+        if (response.skippedCount && response.skippedCount > 0) {
+          msg += ` (${response.skippedCount} skipped)`;
+        }
+        statusStore.setSuccess(msg);
+        // Reload to show updated state
+        setTimeout(() => window.location.reload(), 500);
+      } else {
+        statusStore.setError(response.error || "Failed to freeze tabs");
+      }
+    } catch (error) {
+      console.error("Error freezing tabs:", error);
+      statusStore.setError("Failed to freeze tabs");
+    } finally {
+      isFreezing = false;
+    }
+  }
+
+  async function thawSelectedTabs() {
+    // Get only frozen selected tabs
+    const frozenSelectedTabs = $selectedTabs.filter(tab => tab.frozen);
+
+    if (frozenSelectedTabs.length === 0) {
+      statusStore.setError("No frozen tabs selected to thaw");
+      return;
+    }
+
+    isThawing = true;
+    try {
+      const tabIds = frozenSelectedTabs.map((tab) => tab.id);
+      const response = await chrome.runtime.sendMessage({
+        action: "thawTabs",
+        tabIds,
+      });
+
+      if (response.success) {
+        statusStore.setSuccess(
+          `Thawed ${response.thawedCount} tab${response.thawedCount === 1 ? "" : "s"}`,
+        );
+        // Reload to show updated state
+        setTimeout(() => window.location.reload(), 500);
+      } else {
+        statusStore.setError(response.error || "Failed to thaw tabs");
+      }
+    } catch (error) {
+      console.error("Error thawing tabs:", error);
+      statusStore.setError("Failed to thaw tabs");
+    } finally {
+      isThawing = false;
+    }
+  }
+
+  // Check if any selected tabs can be frozen (not already frozen)
+  $: canFreeze = $selectedTabs.some(tab => !tab.frozen);
+  // Check if any selected tabs can be thawed (are frozen)
+  $: canThaw = $selectedTabs.some(tab => tab.frozen);
 
   async function handleDedupe() {
     if (
@@ -203,8 +297,7 @@
           </svg>
         </div>
         <h2>
-          TabSaver {#if currentView === "tabs" && $selectedTabs.length > 0}({$selectedTabs.length}
-            selected){/if}
+          TabSaver {#if currentView === "tabs"}{#if $selectedTabs.length > 0}({$selectedTabs.length} selected){/if}{#if $frozenTabsCount > 0}<span class="frozen-count">{$frozenTabsCount} frozen</span>{/if}{/if}
         </h2>
       </div>
       <div class="header-actions">
@@ -251,6 +344,24 @@
           >
             <i class="fas fa-save"></i>
             <span>Save & Close</span>
+          </button>
+          <button
+            on:click={freezeSelectedTabs}
+            disabled={$selectedTabs.length === 0 || !canFreeze || isFreezing}
+            class="sidebar-btn freeze-btn"
+            title="Freeze selected tabs to save memory"
+          >
+            <span class="btn-emoji">🧊</span>
+            <span>Freeze</span>
+          </button>
+          <button
+            on:click={thawSelectedTabs}
+            disabled={$selectedTabs.length === 0 || !canThaw || isThawing}
+            class="sidebar-btn thaw-btn"
+            title="Restore frozen tabs"
+          >
+            <span class="btn-emoji">🔥</span>
+            <span>Thaw</span>
           </button>
           <button
             on:click={() => (currentView = "archive")}
@@ -327,7 +438,7 @@
             </thead>
             <tbody>
               {#each $tabsStore as tab (tab.id)}
-                <tr class="tab-row" class:selected={tab.selected}>
+                <tr class="tab-row" class:selected={tab.selected} class:frozen={tab.frozen}>
                   <td class="checkbox-cell">
                     <input
                       type="checkbox"
@@ -338,8 +449,11 @@
                   </td>
                   <td class="title-cell">
                     <div class="tab-info">
-                      <img src={getFaviconUrl(tab)} alt="" class="favicon" />
-                      <span class="tab-title">{tab.title}</span>
+                      {#if tab.frozen}
+                        <span class="frozen-icon" title="Frozen tab">❄️</span>
+                      {/if}
+                      <img src={getFaviconUrl(tab)} alt="" class="favicon" class:frozen-favicon={tab.frozen} />
+                      <span class="tab-title" class:frozen-title={tab.frozen}>{tab.title}</span>
                     </div>
                   </td>
                   <td class="url-cell">
@@ -749,6 +863,39 @@
     border-color: rgba(168, 85, 247, 0.5);
   }
 
+  /* Freeze Button */
+  .freeze-btn {
+    border-color: rgba(56, 189, 248, 0.3);
+  }
+  .freeze-btn:hover:not(:disabled) {
+    background: linear-gradient(
+      135deg,
+      rgba(56, 189, 248, 0.2),
+      rgba(14, 165, 233, 0.2)
+    );
+    color: #38bdf8;
+    border-color: rgba(56, 189, 248, 0.5);
+  }
+
+  /* Thaw Button */
+  .thaw-btn {
+    border-color: rgba(251, 146, 60, 0.3);
+  }
+  .thaw-btn:hover:not(:disabled) {
+    background: linear-gradient(
+      135deg,
+      rgba(251, 146, 60, 0.2),
+      rgba(249, 115, 22, 0.2)
+    );
+    color: #fb923c;
+    border-color: rgba(251, 146, 60, 0.5);
+  }
+
+  .btn-emoji {
+    font-size: 16px;
+    line-height: 1;
+  }
+
   /* Sidebar Input */
   .sidebar-input {
     margin-top: 8px;
@@ -936,6 +1083,58 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* Frozen Tab Styles */
+  .tab-row.frozen {
+    background: linear-gradient(
+      135deg,
+      rgba(56, 189, 248, 0.08),
+      rgba(14, 165, 233, 0.08)
+    );
+  }
+
+  .tab-row.frozen:hover {
+    background: linear-gradient(
+      135deg,
+      rgba(56, 189, 248, 0.15),
+      rgba(14, 165, 233, 0.15)
+    );
+  }
+
+  .tab-row.frozen.selected {
+    background: linear-gradient(
+      135deg,
+      rgba(56, 189, 248, 0.25),
+      rgba(14, 165, 233, 0.25)
+    );
+    border-color: rgba(56, 189, 248, 0.4);
+  }
+
+  .frozen-icon {
+    font-size: 14px;
+    filter: drop-shadow(0 0 4px rgba(56, 189, 248, 0.5));
+  }
+
+  .frozen-favicon {
+    opacity: 0.7;
+    filter: grayscale(30%);
+  }
+
+  .frozen-title {
+    color: #7dd3fc;
+  }
+
+  /* Header frozen count */
+  .frozen-count {
+    font-size: 12px;
+    font-weight: 500;
+    color: #38bdf8;
+    margin-left: 8px;
+    padding: 2px 8px;
+    background: rgba(56, 189, 248, 0.15);
+    border-radius: 10px;
+    border: 1px solid rgba(56, 189, 248, 0.3);
   }
 
   /* Status Bar */

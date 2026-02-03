@@ -1,7 +1,55 @@
 import type { Tab } from './background/types';
+import type { FrozenTabState } from '../lib/types';
 
 export default defineBackground(() => {
   console.log('TabSaver extension installed');
+
+  // --- Freeze/Thaw Utilities ---
+
+  /**
+   * Check if a tab can be frozen
+   */
+  function canFreezeTab(tab: chrome.tabs.Tab): { canFreeze: boolean; reason?: string } {
+    if (tab.url?.startsWith('chrome://') || tab.url?.startsWith('chrome-extension://')) {
+      return { canFreeze: false, reason: 'Cannot freeze internal Chrome pages' };
+    }
+    if (tab.audible) {
+      return { canFreeze: false, reason: 'Cannot freeze tabs playing audio' };
+    }
+    if (tab.url?.includes('frozen.html')) {
+      return { canFreeze: false, reason: 'Tab is already frozen' };
+    }
+    if (!tab.url) {
+      return { canFreeze: false, reason: 'Tab has no URL' };
+    }
+    return { canFreeze: true };
+  }
+
+  /**
+   * Get all frozen tabs from storage
+   */
+  async function getFrozenTabs(): Promise<Record<number, FrozenTabState>> {
+    const { frozenTabs = {} } = await chrome.storage.local.get('frozenTabs');
+    return frozenTabs;
+  }
+
+  /**
+   * Save frozen tab state to storage
+   */
+  async function saveFrozenTab(state: FrozenTabState): Promise<void> {
+    const frozenTabs = await getFrozenTabs();
+    frozenTabs[state.tabId] = state;
+    await chrome.storage.local.set({ frozenTabs });
+  }
+
+  /**
+   * Remove frozen tab state from storage
+   */
+  async function removeFrozenTab(tabId: number): Promise<void> {
+    const frozenTabs = await getFrozenTabs();
+    delete frozenTabs[tabId];
+    await chrome.storage.local.set({ frozenTabs });
+  }
 
   /**
    * Recursive helper to find the "Other Bookmarks" folder.
@@ -125,6 +173,178 @@ export default defineBackground(() => {
     };
   }
 
+  /**
+   * Freeze selected tabs - replace with lightweight placeholder
+   */
+  async function handleFreezeTabs(request: { tabIds: number[] }) {
+    const { tabIds } = request;
+
+    if (!tabIds?.length) {
+      throw new Error('No tabs provided');
+    }
+
+    let frozenCount = 0;
+    let skippedCount = 0;
+    const skippedReasons: string[] = [];
+
+    for (const tabId of tabIds) {
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        const { canFreeze, reason } = canFreezeTab(tab);
+
+        if (!canFreeze) {
+          skippedCount++;
+          if (reason) skippedReasons.push(`${tab.title}: ${reason}`);
+          continue;
+        }
+
+        // Capture scroll position via scripting
+        let scrollX = 0;
+        let scrollY = 0;
+        try {
+          const [result] = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: () => ({ scrollX: window.scrollX, scrollY: window.scrollY }),
+          });
+          scrollX = result?.result?.scrollX || 0;
+          scrollY = result?.result?.scrollY || 0;
+        } catch {
+          // Scripting may fail on some pages, that's ok
+        }
+
+        // Build frozen state
+        const frozenState: FrozenTabState = {
+          tabId,
+          originalUrl: tab.url || '',
+          title: tab.title || '',
+          favIconUrl: tab.favIconUrl || '',
+          scrollX,
+          scrollY,
+          pinned: tab.pinned || false,
+          windowId: tab.windowId,
+          index: tab.index,
+          frozenAt: Date.now(),
+          groupId: tab.groupId,
+        };
+
+        // Save state to storage
+        await saveFrozenTab(frozenState);
+
+        // Build frozen page URL
+        const params = new URLSearchParams({
+          url: frozenState.originalUrl,
+          title: frozenState.title,
+          favicon: frozenState.favIconUrl,
+          tabId: tabId.toString(),
+          scrollX: scrollX.toString(),
+          scrollY: scrollY.toString(),
+        });
+        const frozenUrl = chrome.runtime.getURL(`frozen.html?${params.toString()}`);
+
+        // Navigate tab to frozen page
+        await chrome.tabs.update(tabId, { url: frozenUrl });
+        frozenCount++;
+      } catch (error) {
+        console.error(`Failed to freeze tab ${tabId}:`, error);
+        skippedCount++;
+      }
+    }
+
+    return {
+      success: true,
+      frozenCount,
+      skippedCount,
+      skippedReasons,
+    };
+  }
+
+  /**
+   * Thaw a frozen tab - restore original URL
+   */
+  async function handleThawTab(request: { tabId: number; originalUrl: string; scrollX?: number; scrollY?: number }) {
+    const { tabId, originalUrl, scrollX = 0, scrollY = 0 } = request;
+
+    if (!tabId || !originalUrl) {
+      throw new Error('Missing tabId or originalUrl');
+    }
+
+    // Navigate back to original URL
+    await chrome.tabs.update(tabId, { url: originalUrl });
+
+    // Remove from frozen tabs storage
+    await removeFrozenTab(tabId);
+
+    // Wait for page load, then restore scroll position
+    const listener = (updatedTabId: number, changeInfo: chrome.tabs.TabChangeInfo) => {
+      if (updatedTabId === tabId && changeInfo.status === 'complete') {
+        chrome.tabs.onUpdated.removeListener(listener);
+
+        // Restore scroll position after a short delay
+        setTimeout(() => {
+          chrome.scripting.executeScript({
+            target: { tabId },
+            func: (x: number, y: number) => {
+              window.scrollTo(x, y);
+            },
+            args: [scrollX, scrollY],
+          }).catch(() => {
+            // Scripting may fail on some pages
+          });
+        }, 300);
+      }
+    };
+
+    chrome.tabs.onUpdated.addListener(listener);
+
+    // Clean up listener after 30 seconds in case page never loads
+    setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+    }, 30000);
+
+    return { success: true };
+  }
+
+  /**
+   * Thaw multiple tabs
+   */
+  async function handleThawTabs(request: { tabIds: number[] }) {
+    const { tabIds } = request;
+
+    if (!tabIds?.length) {
+      throw new Error('No tabs provided');
+    }
+
+    const frozenTabs = await getFrozenTabs();
+    let thawedCount = 0;
+
+    for (const tabId of tabIds) {
+      const state = frozenTabs[tabId];
+      if (state) {
+        try {
+          await handleThawTab({
+            tabId,
+            originalUrl: state.originalUrl,
+            scrollX: state.scrollX,
+            scrollY: state.scrollY,
+          });
+          thawedCount++;
+        } catch (error) {
+          console.error(`Failed to thaw tab ${tabId}:`, error);
+        }
+      }
+    }
+
+    return { success: true, thawedCount };
+  }
+
+  /**
+   * Get all frozen tabs state
+   */
+  async function handleGetFrozenTabs() {
+    const frozenTabs = await getFrozenTabs();
+    return { success: true, frozenTabs };
+  }
+
   // --- Main Message Listener ---
 
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -149,15 +369,30 @@ export default defineBackground(() => {
         execute(() => handleSaveTabsToBookmarks(request));
         return true;
 
+      case 'freezeTabs':
+        execute(() => handleFreezeTabs(request));
+        return true;
+
+      case 'thawTab':
+        execute(() => handleThawTab(request));
+        return true;
+
+      case 'thawTabs':
+        execute(() => handleThawTabs(request));
+        return true;
+
+      case 'getFrozenTabs':
+        execute(() => handleGetFrozenTabs());
+        return true;
+
       default:
         // Allow other listeners to handle unknown actions
         return false;
     }
   });
 
-  // Clean up storage on startup
-  chrome.runtime.onStartup.addListener(async () => {
-    await chrome.storage.local.clear();
-    console.log('TabSaver: Cleaned up storage');
+  // Log startup (don't clear storage as it contains frozen tabs state)
+  chrome.runtime.onStartup.addListener(() => {
+    console.log('TabSaver: Extension started');
   });
 });

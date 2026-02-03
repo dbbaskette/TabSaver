@@ -10,7 +10,8 @@ export default defineConfig({
     name: 'TabSaver',
     version: '2.1.1',
     description: 'Manage and save your open Chrome tabs to organized bookmark folders',
-    permissions: ['tabs', 'bookmarks', 'storage'],
+    permissions: ['tabs', 'bookmarks', 'storage', 'scripting'],
+    host_permissions: ['<all_urls>'],
     action: {
       default_popup: 'popup.html'
     }

@@ -526,10 +526,14 @@
 </div>
 
 <style>
+  :global(*) {
+    box-sizing: border-box;
+  }
+
   :global(html),
   :global(body) {
     width: 800px;
-    height: 650px;
+    height: 600px;
     margin: 0;
     padding: 0;
     overflow: hidden;
@@ -1013,7 +1017,7 @@
     overflow-y: auto;
     border-radius: 12px;
     min-height: 0;
-    max-height: 480px;
+    max-height: 440px;
   }
 
   /* Loading State */

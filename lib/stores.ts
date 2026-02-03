@@ -1,5 +1,5 @@
 import { writable, derived } from 'svelte/store';
-import type { Tab, Status } from './types';
+import type { Tab, Status, FrozenTabState } from './types';
 
 // Tabs store
 export const tabsStore = writable<Tab[]>([]);
@@ -9,6 +9,9 @@ export const customFolderNameStore = writable<string>('');
 
 // Refresh trigger for components
 export const refreshTrigger = writable<number>(0);
+
+// Frozen tabs store (tabId -> FrozenTabState)
+export const frozenTabsStore = writable<Record<number, FrozenTabState>>({});
 
 // Status store
 function createStatusStore() {
@@ -52,6 +55,18 @@ export const selectedTabsCount = derived(
 export const allTabsSelected = derived(
   [tabsStore, selectedTabsCount],
   ([$tabs, $selectedCount]) => $tabs.length > 0 && $selectedCount === $tabs.length
+);
+
+// Frozen tabs count
+export const frozenTabsCount = derived(
+  frozenTabsStore,
+  $frozenTabs => Object.keys($frozenTabs).length
+);
+
+// Selected frozen tabs (for thaw operation)
+export const selectedFrozenTabs = derived(
+  [tabsStore, frozenTabsStore],
+  ([$tabs, $frozenTabs]) => $tabs.filter(tab => tab.selected && $frozenTabs[tab.id])
 );
 
 // Helper functions for tabs store

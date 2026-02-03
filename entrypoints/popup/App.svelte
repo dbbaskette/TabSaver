@@ -578,7 +578,7 @@
 
   .modal-content {
     width: 300px;
-    padding: 30px;
+    padding: 32px;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -778,7 +778,7 @@
   .sidebar-content {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 4px;
     padding: 4px;
     overflow-y: auto;
     overflow-x: hidden;
@@ -827,16 +827,16 @@
 
   /* Button Colors */
   .save-btn {
-    border-color: rgba(16, 185, 129, 0.3);
+    border-color: rgba(34, 197, 94, 0.3);
   }
   .save-btn:hover:not(:disabled) {
     background: linear-gradient(
       135deg,
-      rgba(16, 185, 129, 0.2),
-      rgba(5, 150, 105, 0.2)
+      rgba(34, 197, 94, 0.2),
+      rgba(22, 163, 74, 0.2)
     );
-    color: #10b981;
-    border-color: rgba(16, 185, 129, 0.5);
+    color: #22c55e;
+    border-color: rgba(34, 197, 94, 0.5);
   }
 
   .close-btn {

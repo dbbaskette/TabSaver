@@ -21,6 +21,8 @@
 | `space-8` | 16px | Large spacing, card padding |
 | `space-10` | 20px | Extra padding, major sections |
 | `space-12` | 24px | Large containers |
+| `space-16` | 32px | Modal padding, large containers |
+| `space-24` | 48px | Empty/loading state centering |
 
 ---
 
@@ -82,6 +84,22 @@
 |-------|-------|-------|
 | `frozen` | #7dd3fc | Frozen tab text |
 | `frozen-bg` | rgba(56, 189, 248, 0.08) | Frozen row background |
+
+### Button Accent Colors
+
+| Token | Value | Usage |
+|-------|-------|-------|
+| `accent-blue` | #3b82f6 | Archive button |
+| `accent-purple` | #d8b4fe | Dedupe button |
+| `accent-orange` | #fb923c | Thaw button |
+| `accent-gray` | #6b7280 | Refresh button |
+| `accent-gray-light` | #9ca3af | Back button |
+
+### Extended Text Colors
+
+| Token | Value | Usage |
+|-------|-------|-------|
+| `text-light` | #e2e8f0 | Lighter text for dashboard |
 
 ---
 

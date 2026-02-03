@@ -768,7 +768,7 @@
 
   /* Sidebar */
   .sidebar {
-    width: 105px;
+    width: 115px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
@@ -778,8 +778,8 @@
   .sidebar-content {
     display: flex;
     flex-direction: column;
-    gap: 2px;
-    padding: 2px;
+    gap: 3px;
+    padding: 4px;
     overflow-y: auto;
     overflow-x: hidden;
     flex: 1;
@@ -790,8 +790,8 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 1px;
-    padding: 6px 4px;
+    gap: 2px;
+    padding: 8px 6px;
     border: 1px solid rgba(6, 182, 212, 0.2);
     border-radius: 10px;
     background: linear-gradient(
@@ -821,8 +821,8 @@
   }
 
   .sidebar-btn i {
-    font-size: 14px;
-    margin-bottom: 1px;
+    font-size: 16px;
+    margin-bottom: 2px;
   }
 
   /* Button Colors */
@@ -960,13 +960,13 @@
   }
 
   .btn-emoji {
-    font-size: 14px;
+    font-size: 18px;
     line-height: 1;
   }
 
   /* Sidebar Input */
   .sidebar-input {
-    margin-top: 4px;
+    margin-top: 6px;
   }
 
   .input-label {

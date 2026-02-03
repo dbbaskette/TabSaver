@@ -32,14 +32,36 @@
       // Get all tabs in current window
       const tabs = await chrome.tabs.query({ currentWindow: true });
 
-      // Get frozen tabs state
+      // Get frozen tabs state from storage
       const frozenResponse = await chrome.runtime.sendMessage({ action: "getFrozenTabs" });
-      const frozenTabs: Record<number, FrozenTabState> = frozenResponse?.frozenTabs || {};
-      frozenTabsStore.set(frozenTabs);
+      const storedFrozenTabs: Record<number, FrozenTabState> = frozenResponse?.frozenTabs || {};
+
+      // Clean up stale frozen tab entries - only keep entries where tab still exists and is on frozen.html
+      const currentTabIds = new Set(tabs.map(t => t.id));
+      const validFrozenTabs: Record<number, FrozenTabState> = {};
+      const staleTabIds: number[] = [];
+
+      for (const [tabIdStr, state] of Object.entries(storedFrozenTabs)) {
+        const tabId = Number(tabIdStr);
+        const tab = tabs.find(t => t.id === tabId);
+        // Only keep if tab exists AND is still on frozen.html
+        if (tab && tab.url?.includes('frozen.html')) {
+          validFrozenTabs[tabId] = state;
+        } else {
+          staleTabIds.push(tabId);
+        }
+      }
+
+      // Update storage if we found stale entries
+      if (staleTabIds.length > 0) {
+        await chrome.storage.local.set({ frozenTabs: validFrozenTabs });
+      }
+
+      frozenTabsStore.set(validFrozenTabs);
 
       const formattedTabs: Tab[] = tabs.map((tab) => {
-        const isFrozen = !!frozenTabs[tab.id!] || tab.url?.includes('frozen.html');
-        const frozenState = frozenTabs[tab.id!];
+        const isFrozen = !!validFrozenTabs[tab.id!] && tab.url?.includes('frozen.html');
+        const frozenState = validFrozenTabs[tab.id!];
         const tabUrl = isFrozen && frozenState ? frozenState.originalUrl : (tab.url || "");
         const formattedTab: Tab = {
           id: tab.id!,
@@ -507,7 +529,7 @@
   :global(html),
   :global(body) {
     width: 800px;
-    height: 650px;
+    height: 750px;
     margin: 0;
     padding: 0;
     overflow: hidden;
@@ -655,7 +677,7 @@
 
   /* Header */
   .header {
-    padding: 8px 12px;
+    padding: 6px 12px;
     border-bottom: 1px solid rgba(6, 182, 212, 0.3);
     flex-shrink: 0;
   }
@@ -740,29 +762,32 @@
 
   /* Sidebar */
   .sidebar {
-    width: 110px;
+    width: 105px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
-    overflow-y: auto;
-    overflow-x: hidden;
+    overflow: hidden;
   }
 
   .sidebar-content {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    padding: 6px;
+    gap: 2px;
+    padding: 2px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    flex: 1;
+    min-height: 0;
   }
 
   .sidebar-btn {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 2px;
-    padding: 8px 6px;
+    gap: 1px;
+    padding: 6px 4px;
     border: 1px solid rgba(6, 182, 212, 0.2);
-    border-radius: 12px;
+    border-radius: 10px;
     background: linear-gradient(
       135deg,
       rgba(51, 65, 85, 0.9),
@@ -978,6 +1003,8 @@
     flex-direction: column;
     gap: 8px;
     min-width: 0;
+    min-height: 0;
+    overflow: hidden;
   }
 
   /* Table Container */
@@ -986,6 +1013,7 @@
     overflow-y: auto;
     border-radius: 12px;
     min-height: 0;
+    max-height: 520px;
   }
 
   /* Loading State */
